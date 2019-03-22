@@ -1,0 +1,177 @@
+options(repos="https://CRAN.R-project.org")
+source("http://bioconductor.org/biocLite.R")
+biocLite("monocle")
+library(monocle)
+packageVersion('monocle')
+source("http://cf.10xgenomics.com/supp/cell-exp/rkit-install-2.0.0.R")
+library(cellrangerRkit)
+packageVersion("cellrangerRkit")
+my_dir <- "/Users/bmw1095/"
+gbm <- load_cellranger_matrix(my_dir)
+class(gbm)
+dim(exprs(gbm))
+exprs(gbm)[1:5, 1:5]
+dim(pData(gbm))
+head(pData(gbm))
+dim(fData(gbm))
+head(fData(gbm))
+my_feat <- fData(gbm)
+names(my_feat) <- c('id', 'gene_short_name')
+my_cds <- newCellDataSet(exprs(gbm),phenoData = new("AnnotatedDataFrame", data = pData(gbm)),featureData = new("AnnotatedDataFrame", data = my_feat),lowerDetectionLimit = 0.5,expressionFamily = negbinomial.size())
+my_cds
+slotNames(my_cds)
+my_cds <- estimateSizeFactors(my_cds)
+my_cds <- estimateDispersions(my_cds)
+my_cds <- detectGenes(my_cds, min_expr = 0.1)
+head(fData(my_cds))
+summary(fData(my_cds)$num_cells_expressed)
+sum((exprs(my_cds['ENSG00000239945',])))
+sum((exprs(my_cds['ENSG00000238009',])))
+head(pData(my_cds))
+sum((exprs(my_cds)[,"AAACCTGAGCATCATC-1"])>0)
+summary(pData(my_cds)$num_genes_expressed)
+x <- pData(my_cds)$num_genes_expressed
+x_1 <- (x - mean(x)) / sd(x)
+summary(x_1)
+library(ggplot2)
+library(cowplot)
+df <- data.frame(x = x_1)
+ggplot(df, aes(x)) +
+  geom_histogram(bins = 50) +
+  geom_vline(xintercept = c(-2, 2), linetype = "dotted", color = 'red')
+pData(my_cds)$UMI <- Matrix::colSums(exprs(my_cds))
+head(pData(my_cds))
+ggplot(pData(my_cds), aes(num_genes_expressed, UMI)) + geom_point()
+disp_table <- dispersionTable(my_cds)
+head(disp_table)
+table(disp_table$mean_expression>=0.1)
+unsup_clustering_genes <- subset(disp_table, mean_expression >= 0.1)
+my_cds <- setOrderingFilter(my_cds, unsup_clustering_genes$gene_id)
+plot_ordering_genes(my_cds)
+plot_pc_variance_explained(my_cds, return_all = FALSE)
+my_cds <- reduceDimension(my_cds, max_components = 2, num_dim = 5,
+                          reduction_method = 'tSNE', verbose = TRUE)
+my_cds <- clusterCells(my_cds, num_clusters = 15)
+head(pData(my_cds))
+my_cluster_dim_5 <- pData(my_cds)$Cluster
+plot_cell_clusters(my_cds)
+my_cds <- reduceDimension(my_cds, max_components = 2, num_dim = 10,
+                          reduction_method = 'tSNE', verbose = TRUE)
+my_cds <- clusterCells(my_cds, num_clusters = 15)
+my_cluster_dim_10 <- pData(my_cds)$Cluster
+plot_cell_clusters(my_cds)
+install.packages("clues")
+library(clues)
+adjustedRand(as.numeric(my_cluster_dim_5), as.numeric(my_cluster_dim_10))
+my_cds <- reduceDimension(my_cds, max_components = 2, num_dim = 4,
+                          reduction_method = 'tSNE', verbose = TRUE)
+my_cds <- clusterCells(my_cds, num_clusters = 15)
+my_cluster_dim_4 <- pData(my_cds)$Cluster
+my_cds <- reduceDimension(my_cds, max_components = 2, num_dim = 5,
+                          reduction_method = 'tSNE', verbose = TRUE)
+my_cds <- clusterCells(my_cds, num_clusters = 15)
+my_cluster_dim_10 <- pData(my_cds)$Cluster
+clues::adjustedRand(as.numeric(my_cluster_dim_4), as.numeric(my_cluster_dim_5))
+my_cds <- reduceDimension(my_cds, max_components = 2, num_dim = 10,
+                          reduction_method = 'tSNE', verbose = TRUE)
+my_cds <- clusterCells(my_cds, num_clusters = 15)
+my_vector <- rep('no', nrow(pData(my_cds)))
+my_vector[pData(my_cds)$Cluster == 1] <- rep('yes', sum(pData(my_cds)$Cluster == 1))
+pData(my_cds)$test <- my_vector
+head(pData(my_cds))
+length(unsup_clustering_genes$gene_id)
+de_cluster_one <- differentialGeneTest(my_cds[unsup_clustering_genes$gene_id,],
+                                       fullModelFormulaStr = '~test',
+                                       cores = 8)
+dim(de_cluster_one)
+library(dplyr)
+de_cluster_one %>% arrange(qval) %>% head()
+plot_genes_jitter(my_cds['ENSG00000163131',], grouping = "Cluster")
+pData(my_cds)$my_colour <- pData(my_cds)$Cluster == 1 | pData(my_cds)$Cluster == 4 | pData(my_cds)$Cluster == 6
+plot_cell_clusters(my_cds, color_by = 'my_colour')
+expressed_genes <- row.names(subset(fData(my_cds), num_cells_expressed >= 10))
+my_cds_subset <- my_cds[expressed_genes, pData(my_cds)$my_colour]
+my_cds_subset
+my_cds_subset <- detectGenes(my_cds_subset, min_expr = 0.1)
+fData(my_cds_subset)$use_for_ordering <- fData(my_cds_subset)$num_cells_expressed > 0.05 * ncol(my_cds_subset)
+table(fData(my_cds_subset)$use_for_ordering)
+plot_pc_variance_explained(my_cds_subset, return_all = FALSE)
+my_cds_subset <- reduceDimension(my_cds_subset,
+                                 max_components = 2,
+                                 norm_method = 'log',
+                                 num_dim = 10,
+                                 reduction_method = 'tSNE',
+                                 verbose = TRUE)
+ 
+my_cds_subset <- clusterCells(my_cds_subset, verbose = FALSE)
+plot_rho_delta(my_cds_subset, rho_threshold = 2, delta_threshold = 10)
+my_cds_subset <- clusterCells(my_cds_subset,
+                              rho_threshold = 2,
+                              delta_threshold = 10,
+                              skip_rho_sigma = T,
+                              verbose = FALSE)
+table(pData(my_cds_subset)$Cluster)
+plot_cell_clusters(my_cds_subset)
+clustering_DEG_genes <- differentialGeneTest(my_cds_subset,
+                                             fullModelFormulaStr = '~Cluster',
+                                             cores = 8)
+dim(clustering_DEG_genes)
+clustering_DEG_genes %>% arrange(qval) %>% head()
+my_ordering_genes <- row.names(clustering_DEG_genes)[order(clustering_DEG_genes$qval)][1:1000]
+my_cds_subset <- setOrderingFilter(my_cds_subset, ordering_genes = my_ordering_genes)
+my_cds_subset <- reduceDimension(my_cds_subset, method = 'DDRTree')
+my_cds_subset <- orderCells(my_cds_subset)
+plot_cell_trajectory(my_cds_subset, color_by = "Cluster")
+head(pData(my_cds_subset))
+my_pseudotime_de <- differentialGeneTest(my_cds_subset,
+                                         fullModelFormulaStr = "~sm.ns(Pseudotime)",
+                                         cores = 8)
+ 
+my_pseudotime_de %>% arrange(qval) %>% head()
+my_pseudotime_de %>% arrange(qval) %>% head() %>% select(id) -> my_pseudotime_gene
+my_pseudotime_gene <- my_pseudotime_gene$id
+ 
+plot_genes_in_pseudotime(my_cds_subset[my_pseudotime_gene,])
+my_pseudotime_de %>% arrange(qval) %>% head(50) %>% select(id) -> gene_to_cluster
+gene_to_cluster <- gene_to_cluster$id
+ 
+my_pseudotime_cluster <- plot_pseudotime_heatmap(my_cds_subset[gene_to_cluster,],
+                                                 num_clusters = 3,
+                                                 cores = 8,
+                                                 show_rownames = TRUE,
+                                                 return_heatmap = TRUE)
+newdata <- data.frame(Pseudotime = seq(min(pData(my_cds_subset)$Pseudotime), 
+                                       max(pData(my_cds_subset)$Pseudotime), length.out = 100))
+my_cluster <- cutree(my_pseudotime_cluster$tree_row, 3)
+my_cluster
+my_pseudotime_de[names(my_cluster[my_cluster == 1]),"gene_short_name"]
+my_pseudotime_de[names(my_cluster[my_cluster == 2]),"gene_short_name"]
+my_pseudotime_de[names(my_cluster[my_cluster == 3]),"gene_short_name"]
+plot_cell_trajectory(my_cds_subset, color_by = "Cluster")
+BEAM_res <- BEAM(my_cds_subset, branch_point = 1, cores = 8)
+BEAM_res <- BEAM_res[order(BEAM_res$qval),]
+BEAM_res <- BEAM_res[,c("gene_short_name", "pval", "qval")]
+head(BEAM_res)
+table(BEAM_res$qval < 1e-4)
+my_branched_heatmap <- plot_genes_branched_heatmap(my_cds_subset[row.names(subset(BEAM_res, qval < 1e-4)),],
+                                                   branch_point = 1,
+                                                   num_clusters = 4,
+                                                   cores = 8,
+                                                   use_gene_short_name = TRUE,
+                                                   show_rownames = TRUE,
+                                                   return_heatmap = TRUE)
+head(my_branched_heatmap$annotation_row)
+dim(my_branched_heatmap$annotation_row)
+table(my_branched_heatmap$annotation_row$Cluster)
+my_row <- my_branched_heatmap$annotation_row
+my_row <- data.frame(cluster = my_row$Cluster,
+                     gene = row.names(my_row),
+                     stringsAsFactors = FALSE)
+ 
+head(my_row[my_row$cluster == 3,'gene'])
+my_gene <- row.names(subset(fData(my_cds_subset),
+                            gene_short_name %in% head(my_row[my_row$cluster == 3,'gene'])))
+plot_genes_branched_pseudotime(my_cds_subset[my_gene,],
+                               branch_point = 1,
+                               ncol = 1)
+

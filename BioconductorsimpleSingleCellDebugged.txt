@@ -1,0 +1,104 @@
+library(BiocStyle)
+library(knitr)
+opts_chunk$set(error=FALSE, message=FALSE, warning=FALSE)
+opts_chunk$set(fig.asp=1)
+all.urls <- "http://cf.10xgenomics.com/samples/cell-exp/2.1.0/pbmc4k/pbmc4k_raw_gene_bc_matrices.tar.gz"
+all.basenames <- basename(all.urls)
+all.modes <- c("wb")
+for (x in seq_along(all.urls)) { 
+    if (!file.exists(all.basenames[x])) {
+        download.file(all.urls[x], all.basenames[x], mode=all.modes[x])}}
+untar("pbmc4k_raw_gene_bc_matrices.tar.gz", exdir="pbmc4k")
+
+library(DropletUtils)
+fname <- "pbmc4k/raw_gene_bc_matrices/GRCh38"
+sce <- read10xCounts(fname, col.names=TRUE)
+sce
+source("https://bioconductor.org/biocLite.R")
+biocLite("simpleSingleCell")
+class(counts(sce))
+library(scater)
+rownames(sce) <- uniquifyFeatureNames(rowData(sce)$ID, rowData(sce)$Symbol)
+head(rownames(sce))
+library(EnsDb.Hsapiens.v86)
+ebd<-EnsDb.Hsapiens.v86
+location <- mapIds(ebd, keys=rowData(sce)$ID, 
+    column="SEQNAME", keytype="GENEID")
+rowData(sce)$CHR <- location
+summary(location=="MT")
+bcrank <- barcodeRanks(counts(sce))
+uniq <- !duplicated(bcrank$rank)
+plot(bcrank$rank[uniq], bcrank$total[uniq], log="xy",
+    xlab="Rank", ylab="Total UMI count", cex.lab=1.2)
+
+abline(h=bcrank$inflection, col="darkgreen", lty=2)
+abline(h=bcrank$knee, col="dodgerblue", lty=2)
+
+legend("bottomleft", legend=c("Inflection", "Knee"), 
+    col=c("darkgreen", "dodgerblue"), lty=2, cex=1.2)
+set.seed(100)
+e.out <- emptyDrops(counts(sce))
+sum(e.out$FDR <= 0.01, na.rm=TRUE)
+table(Sig=e.out$FDR <= 0.01, Limited=e.out$Limited)
+sce <- sce[,which(e.out$FDR <= 0.01)]
+sce <- calculateQCMetrics(sce, feature_controls=list(Mito=which(location=="MT")))
+par(mfrow=c(1,3))
+hist(sce$log10_total_counts, breaks=20, col="grey80",
+    xlab="Log-total UMI count")
+hist(sce$log10_total_features_by_counts, breaks=20, col="grey80",
+    xlab="Log-total number of expressed features")
+hist(sce$pct_counts_Mito, breaks=20, col="grey80",
+    xlab="Proportion of reads in mitochondrial genes")
+high.mito <- isOutlier(sce$pct_counts_Mito, nmads=3, type="higher")
+sce <- sce[,!high.mito]
+summary(high.mito)
+ave <- calcAverage(sce)
+rowData(sce)$AveCount <- ave
+hist(log10(ave), col="grey80")
+plotHighestExprs(sce)
+library(scran)
+clusters <- quickCluster(sce, method="igraph", min.mean=0.1,
+    irlba.args=list(maxit=1000)) # for convergence.
+table(clusters)
+sce <- computeSumFactors(sce, min.mean=0.1, cluster=clusters)
+summary(sizeFactors(sce))
+plot(sce$total_counts, sizeFactors(sce), log="xy")
+sce <- normalize(sce)
+new.trend <- makeTechTrend(x=sce)
+fit <- trendVar(sce, use.spikes=FALSE, loess.args=list(span=0.05))
+plot(fit$mean, fit$var, pch=16)
+curve(fit$trend(x), col="dodgerblue", add=TRUE)
+curve(new.trend(x), col="red", add=TRUE)
+fit0 <- fit
+fit$trend <- new.trend
+dec <- decomposeVar(fit=fit)
+top.dec <- dec[order(dec$bio, decreasing=TRUE),] 
+head(top.dec)
+plotExpression(sce, features=rownames(top.dec)[1:10])
+sce <- denoisePCA(sce, technical=new.trend, approx=TRUE)
+ncol(reducedDim(sce, "PCA"))
+plot(attr(reducedDim(sce), "percentVar"), xlab="PC",
+    ylab="Proportion of variance explained")
+abline(v=ncol(reducedDim(sce, "PCA")), lty=2, col="red")
+plotPCA(sce, ncomponents=3, colour_by="log10_total_features_by_counts")
+sce <- runTSNE(sce, use_dimred="PCA", perplexity=30, rand_seed=100)
+plotTSNE(sce, colour_by="log10_total_features_by_counts")
+snn.gr <- buildSNNGraph(sce, use.dimred="PCA")
+clusters <- igraph::cluster_walktrap(snn.gr)
+sce$Cluster <- factor(clusters$membership)
+table(sce$Cluster)
+cluster.mod <- clusterModularity(snn.gr, sce$Cluster, get.values=TRUE)
+log.ratio <- log2(cluster.mod$observed/cluster.mod$expected + 1)
+library(pheatmap)
+pheatmap(log.ratio, cluster_rows=FALSE, cluster_cols=FALSE, 
+    color=colorRampPalette(c("white", "blue"))(100))
+plotTSNE(sce, colour_by="Cluster")
+markers <- findMarkers(sce, clusters=sce$Cluster, direction="up")
+marker.set <- markers[["1"]]
+head(marker.set[,1:8], 10) 
+chosen <- rownames(marker.set)[marker.set$Top <= 10]
+plotHeatmap(sce, features=chosen, exprs_values="logcounts", 
+    zlim=5, center=TRUE, symmetric=TRUE, cluster_cols=FALSE,
+    colour_columns_by="Cluster", columns=order(sce$Cluster))
+saveRDS(sce, file="pbmc_data.rds")
+sessionInfo()
